@@ -8,6 +8,11 @@ import pydeck as pdk
 import plotly.express as px
 import streamlit as st
 
+try:
+    from pyproj import Transformer
+except ImportError:
+    Transformer = None
+
 
 st.set_page_config(
     page_title="서울시 공영주차장 정보 앱",
@@ -21,7 +26,6 @@ st.set_page_config(
 # =========================
 
 def read_uploaded_file(uploaded_file):
-    """CSV, XLSX 파일 읽기"""
     file_name = uploaded_file.name.lower()
 
     if file_name.endswith(".csv"):
@@ -55,7 +59,6 @@ def normalize_col_name(name):
 
 
 def find_column(df, candidates):
-    """후보 컬럼명 목록을 기준으로 실제 데이터 컬럼 자동 탐색"""
     normalized = {col: normalize_col_name(col) for col in df.columns}
 
     for candidate in candidates:
@@ -73,7 +76,6 @@ def find_column(df, candidates):
 
 
 def select_column(label, df, default_col=None):
-    """자동 인식된 컬럼을 사용자가 수정할 수 있게 함"""
     options = ["선택 안 함"] + list(df.columns)
 
     if default_col in df.columns:
@@ -90,7 +92,6 @@ def select_column(label, df, default_col=None):
 
 
 def extract_number(value):
-    """문자열에서 숫자 추출"""
     if pd.isna(value):
         return np.nan
 
@@ -104,9 +105,6 @@ def extract_number(value):
 
 
 def parse_time_to_minutes(value):
-    """
-    09:00, 0900, 900, 9:00:00 같은 값을 분 단위로 변환
-    """
     if pd.isna(value):
         return np.nan
 
@@ -119,7 +117,6 @@ def parse_time_to_minutes(value):
     text = text.replace(".", ":")
     text = re.sub(r"\s+", "", text)
 
-    # 09:00:00 같은 경우
     if ":" in text:
         parts = text.split(":")
         try:
@@ -155,28 +152,11 @@ def parse_time_to_minutes(value):
     return np.nan
 
 
-def minutes_to_time_text(minutes):
-    if pd.isna(minutes):
-        return "정보 없음"
-
-    minutes = int(minutes)
-
-    if minutes == 1440:
-        return "24:00"
-
-    hour = minutes // 60
-    minute = minutes % 60
-
-    return f"{hour:02d}:{minute:02d}"
-
-
 def extract_district(address):
-    """주소에서 서울시 자치구 추출"""
     if pd.isna(address):
         return "미상"
 
     text = str(address)
-
     match = re.search(r"([가-힣]+구)", text)
 
     if match:
@@ -186,7 +166,6 @@ def extract_district(address):
 
 
 def make_fee_type(fee_info, base_fee):
-    """요금 정보를 무료/유료/미상으로 분류"""
     info = "" if pd.isna(fee_info) else str(fee_info)
 
     if "무료" in info:
@@ -205,7 +184,6 @@ def make_fee_type(fee_info, base_fee):
 
 
 def check_open_now(row, col_map):
-    """현재 시각 기준 운영 여부 판단"""
     now = datetime.now(ZoneInfo("Asia/Seoul"))
     weekday = now.weekday()
     current_minutes = now.hour * 60 + now.minute
@@ -229,15 +207,12 @@ def check_open_now(row, col_map):
     if pd.isna(start) or pd.isna(end):
         return np.nan
 
-    # 00:00 ~ 00:00이면 24시간 운영으로 간주
     if start == 0 and end == 0:
         return True
 
-    # 일반 운영
     if start <= end:
         return start <= current_minutes <= end
 
-    # 자정 넘어가는 운영
     return current_minutes >= start or current_minutes <= end
 
 
@@ -247,6 +222,64 @@ def safe_unique_cols(cols):
         if col and col not in result:
             result.append(col)
     return result
+
+
+def convert_korean_coordinate_to_wgs84(x, y):
+    """
+    X좌표, Y좌표처럼 한국 좌표계 값이 들어온 경우 WGS84 위도/경도로 변환 시도.
+    서울시 데이터는 보통 EPSG:5179 또는 EPSG:5186 계열이 자주 쓰임.
+    """
+    if Transformer is None:
+        return np.nan, np.nan
+
+    crs_list = ["EPSG:5179", "EPSG:5186", "EPSG:5181"]
+
+    for crs in crs_list:
+        try:
+            transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+            lon, lat = transformer.transform(x, y)
+
+            if 37.0 <= lat <= 38.0 and 126.0 <= lon <= 128.0:
+                return lat, lon
+        except:
+            pass
+
+    return np.nan, np.nan
+
+
+def fix_coordinate_pair(raw_lat, raw_lon):
+    """
+    1. 일반 위도/경도면 그대로 사용
+    2. 위도와 경도가 반대로 들어간 경우 자동 교정
+    3. 한국 좌표계 X/Y값이면 WGS84로 변환 시도
+    """
+    lat = extract_number(raw_lat)
+    lon = extract_number(raw_lon)
+
+    if pd.isna(lat) or pd.isna(lon):
+        return np.nan, np.nan
+
+    # 정상적인 WGS84 위도/경도
+    if 37.0 <= lat <= 38.0 and 126.0 <= lon <= 128.0:
+        return lat, lon
+
+    # 위도와 경도가 서로 뒤바뀐 경우
+    if 37.0 <= lon <= 38.0 and 126.0 <= lat <= 128.0:
+        return lon, lat
+
+    # X좌표, Y좌표 같은 한국 좌표계일 가능성이 있는 경우
+    if abs(lat) > 90 or abs(lon) > 180:
+        converted_lat, converted_lon = convert_korean_coordinate_to_wgs84(lon, lat)
+
+        if pd.notna(converted_lat) and pd.notna(converted_lon):
+            return converted_lat, converted_lon
+
+        converted_lat, converted_lon = convert_korean_coordinate_to_wgs84(lat, lon)
+
+        if pd.notna(converted_lat) and pd.notna(converted_lon):
+            return converted_lat, converted_lon
+
+    return np.nan, np.nan
 
 
 # =========================
@@ -267,6 +300,8 @@ with st.expander("📌 사용 가능한 데이터 예시 컬럼"):
         - 주소
         - 위도
         - 경도
+        - X좌표
+        - Y좌표
         - 주차장유형
         - 운영요일
         - 평일운영시작시각 / 평일운영종료시각
@@ -290,7 +325,7 @@ uploaded_file = st.file_uploader(
 
 
 if uploaded_file is None:
-    st.info("왼쪽 또는 위의 업로드 영역에 CSV 또는 Excel 파일을 업로드해주세요.")
+    st.info("CSV 또는 Excel 파일을 업로드해주세요.")
     st.stop()
 
 
@@ -341,8 +376,8 @@ with st.sidebar.expander("자동 인식 컬럼 확인 / 수정", expanded=False)
     col_map = {
         "name": select_column("주차장명 컬럼", df, auto_cols["name"]),
         "address": select_column("주소 컬럼", df, auto_cols["address"]),
-        "lat": select_column("위도 컬럼", df, auto_cols["lat"]),
-        "lon": select_column("경도 컬럼", df, auto_cols["lon"]),
+        "lat": select_column("위도 또는 Y좌표 컬럼", df, auto_cols["lat"]),
+        "lon": select_column("경도 또는 X좌표 컬럼", df, auto_cols["lon"]),
         "parking_type": select_column("주차장 유형 컬럼", df, auto_cols["parking_type"]),
         "operation_day": select_column("운영요일 컬럼", df, auto_cols["operation_day"]),
         "fee_info": select_column("요금정보 컬럼", df, auto_cols["fee_info"]),
@@ -380,14 +415,16 @@ else:
 
 data["_district"] = data["_address"].apply(extract_district)
 
-if col_map["lat"]:
-    data["_lat"] = data[col_map["lat"]].apply(extract_number)
+if col_map["lat"] and col_map["lon"]:
+    coordinate_result = data.apply(
+        lambda row: fix_coordinate_pair(row[col_map["lat"]], row[col_map["lon"]]),
+        axis=1
+    )
+
+    data["_lat"] = coordinate_result.apply(lambda x: x[0])
+    data["_lon"] = coordinate_result.apply(lambda x: x[1])
 else:
     data["_lat"] = np.nan
-
-if col_map["lon"]:
-    data["_lon"] = data[col_map["lon"]].apply(extract_number)
-else:
     data["_lon"] = np.nan
 
 if col_map["parking_type"]:
@@ -527,10 +564,6 @@ else:
     col4.metric("평균 기본요금", "정보 없음")
 
 
-# =========================
-# 탭
-# =========================
-
 tab1, tab2, tab3, tab4 = st.tabs(
     ["🗺️ 지도", "📈 시각화", "📋 상세 목록", "🧾 원본 데이터"]
 )
@@ -545,7 +578,6 @@ with tab1:
 
     map_data = filtered.dropna(subset=["_lat", "_lon"]).copy()
 
-    # 서울 밖 이상치 제거
     map_data = map_data[
         map_data["_lat"].between(37.0, 38.0)
         & map_data["_lon"].between(126.0, 128.0)
@@ -553,7 +585,12 @@ with tab1:
 
     if map_data.empty:
         st.warning("지도에 표시할 수 있는 위도/경도 데이터가 없습니다.")
-        st.write("데이터에 위도, 경도 컬럼이 있는지 확인해주세요.")
+        st.write("왼쪽 사이드바에서 위도 컬럼과 경도 컬럼이 올바르게 선택되었는지 확인해주세요.")
+
+        if col_map["lat"] and col_map["lon"]:
+            st.write("현재 선택된 좌표 컬럼")
+            st.write(f"- 위도 또는 Y좌표 컬럼: `{col_map['lat']}`")
+            st.write(f"- 경도 또는 X좌표 컬럼: `{col_map['lon']}`")
     else:
         map_data["lat"] = map_data["_lat"]
         map_data["lon"] = map_data["_lon"]
@@ -566,6 +603,16 @@ with tab1:
         )
         map_data["open_text"] = map_data["_open_now_text"]
 
+        def marker_color(fee_type):
+            if fee_type == "무료":
+                return [30, 144, 255, 210]
+            elif fee_type == "유료":
+                return [255, 80, 80, 220]
+            else:
+                return [120, 120, 120, 200]
+
+        map_data["marker_color"] = map_data["fee_type"].apply(marker_color)
+
         center_lat = map_data["lat"].mean()
         center_lon = map_data["lon"].mean()
 
@@ -573,9 +620,13 @@ with tab1:
             "ScatterplotLayer",
             data=map_data,
             get_position="[lon, lat]",
-            get_radius=80,
+            get_fill_color="marker_color",
+            get_line_color=[255, 255, 255, 255],
+            get_radius=100,
+            radius_min_pixels=6,
+            radius_max_pixels=20,
             pickable=True,
-            opacity=0.75,
+            opacity=0.9,
             stroked=True,
             filled=True,
             line_width_min_pixels=1,
@@ -590,28 +641,34 @@ with tab1:
 
         tooltip = {
             "html": """
+            <div style="font-size:13px;">
             <b>{name}</b><br/>
             자치구: {district}<br/>
             주소: {address}<br/>
             요금 유형: {fee_type}<br/>
             기본요금: {base_fee_text}<br/>
             현재 상태: {open_text}
+            </div>
             """,
             "style": {
                 "backgroundColor": "white",
-                "color": "black"
+                "color": "black",
+                "border": "1px solid #cccccc",
+                "borderRadius": "8px",
+                "padding": "8px"
             }
         }
 
-        st.pydeck_chart(
-            pdk.Deck(
-                layers=[layer],
-                initial_view_state=view_state,
-                tooltip=tooltip,
-            )
+        deck = pdk.Deck(
+            map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+            initial_view_state=view_state,
+            layers=[layer],
+            tooltip=tooltip,
         )
 
-        st.caption("지도 위 점에 마우스를 올리면 주차장명, 주소, 요금 정보를 확인할 수 있습니다.")
+        st.pydeck_chart(deck, use_container_width=True)
+
+        st.caption("파란색은 무료, 빨간색은 유료, 회색은 요금 정보 미상 주차장입니다.")
 
 
 # =========================
