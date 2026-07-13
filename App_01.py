@@ -104,7 +104,6 @@ MENUS = [
         "description": "매콤하고 든든해서 스트레스 받을 때 좋은 메뉴",
         "tags": ["한식", "매운맛", "든든한", "고기", "밥", "자극적"]
     },
-
     {
         "name": "짜장면",
         "category": "중식",
@@ -140,7 +139,6 @@ MENUS = [
         "description": "여럿이 함께 먹기 좋은 인기 중식 메뉴",
         "tags": ["중식", "함께먹기", "인기", "고기", "든든한"]
     },
-
     {
         "name": "초밥",
         "category": "일식",
@@ -176,7 +174,6 @@ MENUS = [
         "description": "밥과 고기를 빠르고 든든하게 먹을 수 있는 메뉴",
         "tags": ["일식", "밥", "고기", "든든한", "깔끔한"]
     },
-
     {
         "name": "파스타",
         "category": "양식",
@@ -220,8 +217,6 @@ MENUS = [
 # -----------------------------
 @st.cache_data(ttl=60 * 60)
 def get_coordinates(city_name):
-    """도시 이름을 위도, 경도로 변환"""
-
     city_name = city_name.strip()
 
     if city_name in KOREA_CITY_COORDS:
@@ -240,58 +235,11 @@ def get_coordinates(city_name):
     if simplified_name in KOREA_CITY_COORDS:
         return KOREA_CITY_COORDS[simplified_name]
 
-    english_aliases = {
-        "seoul": "서울",
-        "busan": "부산",
-        "incheon": "인천",
-        "daegu": "대구",
-        "daejeon": "대전",
-        "gwangju": "광주",
-        "ulsan": "울산",
-        "sejong": "세종",
-        "suwon": "수원",
-        "jeju": "제주"
-    }
-
-    lower_name = city_name.lower()
-
-    if lower_name in english_aliases:
-        return KOREA_CITY_COORDS[english_aliases[lower_name]]
-
-    url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {
-        "name": city_name,
-        "count": 1,
-        "language": "ko",
-        "format": "json"
-    }
-
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        if "results" not in data or len(data["results"]) == 0:
-            return None
-
-        result = data["results"][0]
-
-        return {
-            "name": result.get("name", city_name),
-            "country": result.get("country", ""),
-            "latitude": result["latitude"],
-            "longitude": result["longitude"],
-            "timezone": result.get("timezone", "Asia/Seoul")
-        }
-
-    except Exception:
-        return None
+    return None
 
 
 @st.cache_data(ttl=30 * 60)
 def get_weather(latitude, longitude):
-    """Open-Meteo에서 오늘 날씨 정보 가져오기"""
-
     url = "https://api.open-meteo.com/v1/forecast"
 
     params = {
@@ -311,8 +259,6 @@ def get_weather(latitude, longitude):
 
 @st.cache_data(ttl=60 * 60 * 24)
 def get_wiki_image(title):
-    """한국어 위키백과에서 음식 썸네일 이미지 가져오기"""
-
     url = "https://ko.wikipedia.org/w/api.php"
 
     params = {
@@ -347,8 +293,6 @@ def get_wiki_image(title):
 
 
 def get_kakao_rest_api_key():
-    """Streamlit secrets에서 Kakao REST API 키 가져오기"""
-
     try:
         return st.secrets.get("KAKAO_REST_API_KEY", "")
     except Exception:
@@ -356,8 +300,6 @@ def get_kakao_rest_api_key():
 
 
 def search_restaurants_by_kakao(keyword, latitude, longitude, kakao_key, radius=2000):
-    """카카오 Local API로 주변 음식점 검색"""
-
     if not kakao_key:
         return []
 
@@ -389,8 +331,6 @@ def search_restaurants_by_kakao(keyword, latitude, longitude, kakao_key, radius=
 
 
 def find_restaurants_for_menu(menu, location, kakao_key, radius):
-    """추천 메뉴명으로 검색하고, 결과가 적으면 음식 종류나 맛집 키워드로 재검색"""
-
     latitude = location["latitude"]
     longitude = location["longitude"]
 
@@ -521,7 +461,7 @@ def birthday_to_tags(birthday):
         return ["추운날", "따뜻한", "국물", "특별한날"]
 
 
-def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_categories):
+def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_categories, shuffle_seed):
     user_tags = []
     user_tags += weather_tags
     user_tags += mbti_to_tags(mbti)
@@ -534,8 +474,6 @@ def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_ca
         user_tags += ["깔끔한", "무난한", "가벼운"]
 
     user_tag_set = set(user_tags)
-
-    seed_text = f"{date.today()}-{mbti}-{birthday}-{mood}-{spicy_level}"
 
     scored = []
 
@@ -553,7 +491,8 @@ def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_ca
         elif spicy_level >= 4 and "매운맛" in menu_tag_set:
             score += 8
 
-        score += random.Random(seed_text + menu["name"]).random()
+        random_bonus = random.Random(str(shuffle_seed) + menu["name"]).uniform(0, 25)
+        score += random_bonus
 
         scored.append({
             "menu": menu,
@@ -570,8 +509,6 @@ def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_ca
 # 지도 함수
 # -----------------------------
 def make_restaurant_map(location, places):
-    """음식점 마커가 표시된 지도 만들기"""
-
     center_lat = location["latitude"]
     center_lon = location["longitude"]
 
@@ -630,7 +567,11 @@ with st.sidebar:
         index=0
     )
 
-    mbti = st.selectbox("MBTI", MBTI_TYPES, index=1)
+    mbti = st.selectbox(
+        "MBTI",
+        MBTI_TYPES,
+        index=1
+    )
 
     birthday = st.date_input(
         "생일",
@@ -638,7 +579,10 @@ with st.sidebar:
         help="추천에는 연도보다 월/일의 계절감을 중심으로 사용합니다."
     )
 
-    mood = st.selectbox("오늘 기분", list(MOOD_TAGS.keys()))
+    mood = st.selectbox(
+        "오늘 기분",
+        list(MOOD_TAGS.keys())
+    )
 
     spicy_level = st.slider(
         "매운 음식 선호도",
@@ -667,6 +611,28 @@ with st.sidebar:
 
 
 # -----------------------------
+# 입력값 변경 감지
+# -----------------------------
+current_input_state = {
+    "city": city,
+    "mbti": mbti,
+    "birthday": str(birthday),
+    "mood": mood,
+    "spicy_level": spicy_level,
+    "selected_categories": tuple(selected_categories),
+    "restaurant_radius": restaurant_radius
+}
+
+if "last_input_state" not in st.session_state:
+    st.session_state.last_input_state = current_input_state
+    st.session_state.menu_shuffle_seed = random.random()
+
+elif st.session_state.last_input_state != current_input_state:
+    st.session_state.last_input_state = current_input_state
+    st.session_state.menu_shuffle_seed = random.random()
+
+
+# -----------------------------
 # 메인 실행
 # -----------------------------
 if not selected_categories:
@@ -677,7 +643,7 @@ try:
     location = get_coordinates(city)
 
     if location is None:
-        st.error("지역을 찾을 수 없습니다. 예: 서울, 부산, 인천, 대전처럼 입력해보세요.")
+        st.error("지역을 찾을 수 없습니다.")
         st.stop()
 
     weather_data = get_weather(location["latitude"], location["longitude"])
@@ -731,7 +697,8 @@ recommendations, all_tags = recommend_menus(
     birthday=birthday,
     mood=mood,
     spicy_level=spicy_level,
-    selected_categories=selected_categories
+    selected_categories=selected_categories,
+    shuffle_seed=st.session_state.menu_shuffle_seed
 )
 
 best = recommendations[0]
