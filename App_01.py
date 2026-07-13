@@ -2,8 +2,10 @@ import random
 from datetime import date
 from urllib.parse import quote
 
+import folium
 import requests
 import streamlit as st
+from streamlit_folium import st_folium
 
 
 # -----------------------------
@@ -16,11 +18,38 @@ st.set_page_config(
 )
 
 st.title("🍱 오늘 뭐 먹지?")
-st.caption("오늘 날씨, MBTI, 생일, 기분을 바탕으로 점심 메뉴를 추천해주는 웹앱입니다.")
+st.caption("오늘 날씨, MBTI, 생일, 기분을 바탕으로 점심 메뉴와 주변 음식점을 추천해주는 웹앱입니다.")
 
 
 # -----------------------------
-# 데이터
+# 한국 주요 도시 좌표
+# -----------------------------
+KOREA_CITY_COORDS = {
+    "서울": {"name": "서울", "country": "대한민국", "latitude": 37.5665, "longitude": 126.9780, "timezone": "Asia/Seoul"},
+    "부산": {"name": "부산", "country": "대한민국", "latitude": 35.1796, "longitude": 129.0756, "timezone": "Asia/Seoul"},
+    "인천": {"name": "인천", "country": "대한민국", "latitude": 37.4563, "longitude": 126.7052, "timezone": "Asia/Seoul"},
+    "대구": {"name": "대구", "country": "대한민국", "latitude": 35.8714, "longitude": 128.6014, "timezone": "Asia/Seoul"},
+    "대전": {"name": "대전", "country": "대한민국", "latitude": 36.3504, "longitude": 127.3845, "timezone": "Asia/Seoul"},
+    "광주": {"name": "광주", "country": "대한민국", "latitude": 35.1595, "longitude": 126.8526, "timezone": "Asia/Seoul"},
+    "울산": {"name": "울산", "country": "대한민국", "latitude": 35.5384, "longitude": 129.3114, "timezone": "Asia/Seoul"},
+    "세종": {"name": "세종", "country": "대한민국", "latitude": 36.4800, "longitude": 127.2890, "timezone": "Asia/Seoul"},
+    "수원": {"name": "수원", "country": "대한민국", "latitude": 37.2636, "longitude": 127.0286, "timezone": "Asia/Seoul"},
+    "제주": {"name": "제주", "country": "대한민국", "latitude": 33.4996, "longitude": 126.5312, "timezone": "Asia/Seoul"},
+    "성남": {"name": "성남", "country": "대한민국", "latitude": 37.4200, "longitude": 127.1265, "timezone": "Asia/Seoul"},
+    "고양": {"name": "고양", "country": "대한민국", "latitude": 37.6584, "longitude": 126.8320, "timezone": "Asia/Seoul"},
+    "용인": {"name": "용인", "country": "대한민국", "latitude": 37.2411, "longitude": 127.1776, "timezone": "Asia/Seoul"},
+    "청주": {"name": "청주", "country": "대한민국", "latitude": 36.6424, "longitude": 127.4890, "timezone": "Asia/Seoul"},
+    "천안": {"name": "천안", "country": "대한민국", "latitude": 36.8151, "longitude": 127.1139, "timezone": "Asia/Seoul"},
+    "전주": {"name": "전주", "country": "대한민국", "latitude": 35.8242, "longitude": 127.1480, "timezone": "Asia/Seoul"},
+    "포항": {"name": "포항", "country": "대한민국", "latitude": 36.0190, "longitude": 129.3435, "timezone": "Asia/Seoul"},
+    "창원": {"name": "창원", "country": "대한민국", "latitude": 35.2285, "longitude": 128.6811, "timezone": "Asia/Seoul"},
+    "춘천": {"name": "춘천", "country": "대한민국", "latitude": 37.8813, "longitude": 127.7298, "timezone": "Asia/Seoul"},
+    "강릉": {"name": "강릉", "country": "대한민국", "latitude": 37.7519, "longitude": 128.8761, "timezone": "Asia/Seoul"}
+}
+
+
+# -----------------------------
+# 음식 데이터
 # -----------------------------
 MBTI_TYPES = [
     "ISTJ", "ISFJ", "INFJ", "INTJ",
@@ -192,6 +221,43 @@ MENUS = [
 @st.cache_data(ttl=60 * 60)
 def get_coordinates(city_name):
     """도시 이름을 위도, 경도로 변환"""
+
+    city_name = city_name.strip()
+
+    if city_name in KOREA_CITY_COORDS:
+        return KOREA_CITY_COORDS[city_name]
+
+    simplified_name = (
+        city_name
+        .replace("특별시", "")
+        .replace("광역시", "")
+        .replace("특별자치시", "")
+        .replace("특별자치도", "")
+        .replace("시", "")
+        .strip()
+    )
+
+    if simplified_name in KOREA_CITY_COORDS:
+        return KOREA_CITY_COORDS[simplified_name]
+
+    english_aliases = {
+        "seoul": "서울",
+        "busan": "부산",
+        "incheon": "인천",
+        "daegu": "대구",
+        "daejeon": "대전",
+        "gwangju": "광주",
+        "ulsan": "울산",
+        "sejong": "세종",
+        "suwon": "수원",
+        "jeju": "제주"
+    }
+
+    lower_name = city_name.lower()
+
+    if lower_name in english_aliases:
+        return KOREA_CITY_COORDS[english_aliases[lower_name]]
+
     url = "https://geocoding-api.open-meteo.com/v1/search"
     params = {
         "name": city_name,
@@ -200,27 +266,34 @@ def get_coordinates(city_name):
         "format": "json"
     }
 
-    response = requests.get(url, params=params, timeout=10)
-    response.raise_for_status()
-    data = response.json()
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
 
-    if "results" not in data:
+        if "results" not in data or len(data["results"]) == 0:
+            return None
+
+        result = data["results"][0]
+
+        return {
+            "name": result.get("name", city_name),
+            "country": result.get("country", ""),
+            "latitude": result["latitude"],
+            "longitude": result["longitude"],
+            "timezone": result.get("timezone", "Asia/Seoul")
+        }
+
+    except Exception:
         return None
-
-    result = data["results"][0]
-    return {
-        "name": result.get("name", city_name),
-        "country": result.get("country", ""),
-        "latitude": result["latitude"],
-        "longitude": result["longitude"],
-        "timezone": result.get("timezone", "Asia/Seoul")
-    }
 
 
 @st.cache_data(ttl=30 * 60)
 def get_weather(latitude, longitude):
     """Open-Meteo에서 오늘 날씨 정보 가져오기"""
+
     url = "https://api.open-meteo.com/v1/forecast"
+
     params = {
         "latitude": latitude,
         "longitude": longitude,
@@ -232,13 +305,16 @@ def get_weather(latitude, longitude):
 
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
+
     return response.json()
 
 
 @st.cache_data(ttl=60 * 60 * 24)
 def get_wiki_image(title):
     """한국어 위키백과에서 음식 썸네일 이미지 가져오기"""
+
     url = "https://ko.wikipedia.org/w/api.php"
+
     params = {
         "action": "query",
         "format": "json",
@@ -247,6 +323,7 @@ def get_wiki_image(title):
         "pithumbsize": 900,
         "redirects": 1
     }
+
     headers = {
         "User-Agent": "StreamlitLunchRecommender/1.0"
     }
@@ -257,6 +334,7 @@ def get_wiki_image(title):
         data = response.json()
 
         pages = data.get("query", {}).get("pages", {})
+
         for page in pages.values():
             thumbnail = page.get("thumbnail")
             if thumbnail and "source" in thumbnail:
@@ -265,8 +343,77 @@ def get_wiki_image(title):
     except Exception:
         pass
 
-    # 이미지가 없을 때 대체 이미지
     return f"https://placehold.co/900x600?text={quote(title)}"
+
+
+def get_kakao_rest_api_key():
+    """Streamlit secrets에서 Kakao REST API 키 가져오기"""
+
+    try:
+        return st.secrets.get("KAKAO_REST_API_KEY", "")
+    except Exception:
+        return ""
+
+
+def search_restaurants_by_kakao(keyword, latitude, longitude, kakao_key, radius=2000):
+    """카카오 Local API로 주변 음식점 검색"""
+
+    if not kakao_key:
+        return []
+
+    url = "https://dapi.kakao.com/v2/local/search/keyword.json"
+
+    headers = {
+        "Authorization": f"KakaoAK {kakao_key}"
+    }
+
+    params = {
+        "query": keyword,
+        "x": longitude,
+        "y": latitude,
+        "radius": radius,
+        "category_group_code": "FD6",
+        "sort": "distance",
+        "size": 10
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        return data.get("documents", [])
+
+    except Exception:
+        return []
+
+
+def find_restaurants_for_menu(menu, location, kakao_key, radius):
+    """추천 메뉴명으로 검색하고, 결과가 적으면 음식 종류나 맛집 키워드로 재검색"""
+
+    latitude = location["latitude"]
+    longitude = location["longitude"]
+
+    search_keywords = [
+        menu["name"],
+        f"{menu['name']} 맛집",
+        f"{menu['category']} 음식점",
+        "맛집"
+    ]
+
+    for keyword in search_keywords:
+        places = search_restaurants_by_kakao(
+            keyword=keyword,
+            latitude=latitude,
+            longitude=longitude,
+            kakao_key=kakao_key,
+            radius=radius
+        )
+
+        if places:
+            return places, keyword
+
+    return [], menu["name"]
 
 
 # -----------------------------
@@ -401,13 +548,11 @@ def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_ca
 
         score = len(matched_tags) * 10
 
-        # 매운맛 선호도 반영
         if spicy_level <= 1 and "매운맛" in menu_tag_set:
             score -= 8
         elif spicy_level >= 4 and "매운맛" in menu_tag_set:
             score += 8
 
-        # 매일 같은 조건이어도 약간의 다양성을 주는 결정적 랜덤값
         score += random.Random(seed_text + menu["name"]).random()
 
         scored.append({
@@ -417,7 +562,60 @@ def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_ca
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
+
     return scored, sorted(list(user_tag_set))
+
+
+# -----------------------------
+# 지도 함수
+# -----------------------------
+def make_restaurant_map(location, places):
+    """음식점 마커가 표시된 지도 만들기"""
+
+    center_lat = location["latitude"]
+    center_lon = location["longitude"]
+
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=15
+    )
+
+    folium.Marker(
+        [center_lat, center_lon],
+        popup=f"{location['name']} 중심 위치",
+        tooltip="선택한 지역",
+        icon=folium.Icon(color="blue", icon="home")
+    ).add_to(m)
+
+    for place in places:
+        try:
+            lat = float(place["y"])
+            lon = float(place["x"])
+        except Exception:
+            continue
+
+        place_name = place.get("place_name", "이름 없음")
+        address = place.get("road_address_name") or place.get("address_name", "")
+        phone = place.get("phone", "")
+        distance = place.get("distance", "")
+        place_url = place.get("place_url", "")
+
+        popup_html = f"""
+        <b>{place_name}</b><br>
+        {address}<br>
+        전화: {phone if phone else "정보 없음"}<br>
+        거리: {distance}m<br>
+        <a href="{place_url}" target="_blank">카카오맵에서 보기</a>
+        """
+
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=place_name,
+            icon=folium.Icon(color="red", icon="cutlery", prefix="fa")
+        ).add_to(m)
+
+    return m
 
 
 # -----------------------------
@@ -426,13 +624,17 @@ def recommend_menus(weather_tags, mbti, birthday, mood, spicy_level, selected_ca
 with st.sidebar:
     st.header("내 정보 입력")
 
-    city = st.text_input("지역", value="서울")
+    city = st.selectbox(
+        "지역",
+        list(KOREA_CITY_COORDS.keys()),
+        index=0
+    )
 
-    mbti = st.selectbox("MBTI", MBTI_TYPES, index=6)
+    mbti = st.selectbox("MBTI", MBTI_TYPES, index=1)
 
     birthday = st.date_input(
         "생일",
-        value=date(2008, 1, 1),
+        value=date(2009, 1, 27),
         help="추천에는 연도보다 월/일의 계절감을 중심으로 사용합니다."
     )
 
@@ -447,15 +649,25 @@ with st.sidebar:
     )
 
     categories = ["한식", "중식", "일식", "양식"]
+
     selected_categories = st.multiselect(
         "추천받고 싶은 음식 종류",
         categories,
         default=categories
     )
 
+    restaurant_radius = st.slider(
+        "음식점 검색 반경",
+        min_value=500,
+        max_value=5000,
+        value=2000,
+        step=500,
+        help="선택한 지역 중심 좌표 기준으로 주변 음식점을 검색합니다."
+    )
+
 
 # -----------------------------
-# 메인 화면
+# 메인 실행
 # -----------------------------
 if not selected_categories:
     st.warning("최소 한 가지 음식 종류를 선택해주세요.")
@@ -469,6 +681,7 @@ try:
         st.stop()
 
     weather_data = get_weather(location["latitude"], location["longitude"])
+
     current = weather_data["current"]
     daily = weather_data["daily"]
 
@@ -487,12 +700,15 @@ except Exception as e:
     st.stop()
 
 
+# -----------------------------
+# 날씨 정보 표시
+# -----------------------------
 st.subheader("🌤️ 오늘 날씨 정보")
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric("지역", f"{location['name']}")
+    st.metric("지역", location["name"])
 
 with col2:
     st.metric("현재 기온", f"{temperature}℃")
@@ -506,6 +722,9 @@ with col4:
 st.caption(f"습도: {humidity}% · 풍속: {wind_speed} km/h")
 
 
+# -----------------------------
+# 메뉴 추천
+# -----------------------------
 recommendations, all_tags = recommend_menus(
     weather_tags=weather_tags,
     mbti=mbti,
@@ -537,6 +756,7 @@ with right:
     st.write(best_menu["description"])
 
     st.markdown("### 추천 이유")
+
     if best["matched_tags"]:
         st.write(", ".join(best["matched_tags"]))
     else:
@@ -549,6 +769,73 @@ with right:
     st.write(f"- 매운맛 선호도: **{spicy_level}/5**")
 
 
+# -----------------------------
+# 음식점 지도 추천
+# -----------------------------
+st.divider()
+
+st.subheader("🗺️ 주변 음식점 추천 지도")
+
+kakao_key = get_kakao_rest_api_key()
+
+if not kakao_key:
+    st.warning(
+        "카카오 REST API 키가 설정되어 있지 않아 실제 음식점 검색은 실행되지 않습니다. "
+        "아래 지도에는 선택한 지역 중심 위치만 표시됩니다."
+    )
+
+    search_url = f"https://map.kakao.com/link/search/{quote(location['name'] + ' ' + best_menu['name'])}"
+    st.markdown(f"[카카오맵에서 '{location['name']} {best_menu['name']}' 검색하기]({search_url})")
+
+    empty_map = make_restaurant_map(location, [])
+    st_folium(empty_map, width=1000, height=500)
+
+else:
+    places, used_keyword = find_restaurants_for_menu(
+        menu=best_menu,
+        location=location,
+        kakao_key=kakao_key,
+        radius=restaurant_radius
+    )
+
+    st.caption(f"검색 키워드: **{used_keyword}** · 검색 반경: **{restaurant_radius}m**")
+
+    if not places:
+        st.info("주변 음식점을 찾지 못했습니다. 검색 반경을 넓히거나 다른 지역을 선택해보세요.")
+
+        empty_map = make_restaurant_map(location, [])
+        st_folium(empty_map, width=1000, height=500)
+
+    else:
+        restaurant_map = make_restaurant_map(location, places)
+        st_folium(restaurant_map, width=1000, height=500)
+
+        st.markdown("### 가까운 음식점 목록")
+
+        restaurant_rows = []
+
+        for place in places:
+            restaurant_rows.append({
+                "이름": place.get("place_name", ""),
+                "거리": f"{place.get('distance', '')}m",
+                "주소": place.get("road_address_name") or place.get("address_name", ""),
+                "전화번호": place.get("phone", ""),
+                "카카오맵": place.get("place_url", "")
+            })
+
+        st.dataframe(
+            restaurant_rows,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "카카오맵": st.column_config.LinkColumn("카카오맵")
+            }
+        )
+
+
+# -----------------------------
+# 추천 순위
+# -----------------------------
 st.divider()
 
 st.subheader("🏆 추천 순위 TOP 6")
@@ -564,6 +851,7 @@ for i, item in enumerate(top6):
             get_wiki_image(menu["wiki_title"]),
             use_container_width=True
         )
+
         st.markdown(f"### {i + 1}. {menu['name']}")
         st.markdown(f"**{menu['category']}**")
         st.caption(menu["description"])
@@ -572,6 +860,9 @@ for i, item in enumerate(top6):
             st.write("관련 키워드:", ", ".join(item["matched_tags"][:5]))
 
 
+# -----------------------------
+# 음식 종류별 후보
+# -----------------------------
 st.divider()
 
 st.subheader("🍽️ 음식 종류별 추천 후보")
@@ -599,6 +890,7 @@ for tab, category in zip(tabs, ["한식", "중식", "일식", "양식"]):
                     get_wiki_image(menu["wiki_title"]),
                     use_container_width=True
                 )
+
                 st.markdown(f"### {menu['name']}")
                 st.caption(menu["description"])
 
