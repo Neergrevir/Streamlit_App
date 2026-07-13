@@ -2,3 +2,8 @@ streamlit
 requests
 folium
 streamlit-folium
+pandas
+numpy
+openpyxl
+pydeck
+plotly
