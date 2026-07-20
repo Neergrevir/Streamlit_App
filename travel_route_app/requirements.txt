@@ -1,0 +1,6 @@
+streamlit>=1.41,<2.0
+requests>=2.32,<3.0
+pandas>=2.2,<3.0
+numpy>=1.26,<3.0
+folium>=0.18,<0.21
+streamlit-folium>=0.24,<0.27
